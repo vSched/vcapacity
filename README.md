@@ -2,7 +2,7 @@ Program used to gauge capacity, latency and performance of cores.
 <br/>
 Note that this prober will only work properly with the vSched kernel. 
 <br/>
-Run setup_vcapacity.sh before hand.
+Run setup_vcapacity.sh beforehand.
 <br/>
 
 PARAMETERS-
