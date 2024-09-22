@@ -37,6 +37,7 @@ bool awake_workers_flag = false;
 int initialized = 0;
 int profiler_iter = -1;
 chrono::time_point<chrono::_V2::system_clock, chrono::_V2::system_clock::duration> endtime;
+chrono::time_point<chrono::_V2::system_clock, chrono::_V2::system_clock::duration> hard_endtime;
 
 pthread_cond_t prof_cond = PTHREAD_COND_INITIALIZER;
 pthread_cond_t heav_prof_cond = PTHREAD_COND_INITIALIZER;
@@ -508,75 +509,94 @@ void disableStragglerCpus(vector<profiled_data>& result_arr){
     }
 }
 
+bool preemptive_leave(vector<raw_data>& data_begin,vector<raw_data>& data_end){
+  int max_preempts = -2;
 
-void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
+  bool base_case_passed = true;
 
-    vector<raw_data> data_begin(num_threads);
-    vector<profiled_data> result_arr(num_threads);
+  for (int i = 0; i < num_threads; i++) {
+    int preempts = data_end[i].preempts - data_begin[i].preempts;
+    if(preempts> max_preempts) {
+      max_preempts = preempts;
+    }
 
-    while(true){
-      //If the last interval was heavy, move the threads to low priority. If interval is less then 2, obviously special workload. 
-      if ((!heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
-        for (int i = 0; i < num_threads; i++) {
-          moveThreadtoLowPrio(thread_arg[i]->tid);
-        }
-      }
-      updateVectorFromBanlist("/home/ubuntu/banlist/vtop.txt");
-      //sleep during sleep
-      this_thread::sleep_for(chrono::milliseconds(sleep_length));
+    if(preempts>0 || ((data_end[i].steal_time - data_begin[i].steal_time) < 1000) ) {
+      return false;
+    }
+  }
 
-      //We want to set the endtime and get data immediately after the threads have woken up in order to minimize innacuracy, this is to keep threads waiting
-      endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(1000000000);
+  return (max_preempts>2);
+}
 
-      //this is for the heavy profile period
+
+bool do_small_profile(vector<raw_data>& data_begin,vector<raw_data>& data_end, vector<thread_args*> thread_arg){
+  while(true){
       awake_workers_flag=false;
-      
       //wake up threads and broadcast 
       initialized = 1;
       pthread_cond_broadcast(&prof_cond);
+      endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(20);
+      this_thread::sleep_for(chrono::milliseconds(20));
 
       //if it's a heavy profile period wait for the workers to wake up
       if((profiler_iter) % heavy_profile_interval == 0){
         waitforWorkers();
         awake_workers_flag=true;
       }
-
-      //set the endtime and get data
-      endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(profile_time);
-      get_cpu_information(num_threads,data_begin,thread_arg);
-      //TODO-sleep every x ms and wake up to see if it's now(potentially)try nano sleep? (do some testing)
-      //Wait for processors to finish profiling
-
-      //sleep during profiling
-      this_thread::sleep_for(chrono::milliseconds(profile_time));
-
-      //wait for everybody to finish reporting data
-      if ((profiler_iter) % heavy_profile_interval == 0){
-        waitforWorkers();
-      }
-      get_cpu_information(num_threads,data_end,thread_arg);
       initialized = 0;
-      //get actual profiling period
-      double test = (profile_time * 1000000
-        + static_cast<double>(chrono::duration_cast<chrono::nanoseconds>(chrono::high_resolution_clock::now().time_since_epoch()).count())
-        - static_cast<double>(chrono::duration_cast<chrono::nanoseconds>(endtime.time_since_epoch()).count()));
-      //  test = (profile_time * 1000000);
-      getFinalizedData(num_threads,test,data_begin,data_end,result_arr,thread_arg);
-      give_to_kernel(num_threads,result_arr);
-       //If the next interval is heavy, move the threads to high priority.
-      if ((profiler_iter+1) % heavy_profile_interval == 0){
-        for (int i = 0; i < num_threads; i++) {
-          moveThreadtoHighPrio(thread_arg[i]->tid);
-        }
-      }
-      banVcpus(result_arr);
-	    disableStragglerCpus(result_arr);
-      profiler_iter++;
-      if(verbose){
-        printResult(num_threads,result_arr,thread_arg);
+      get_cpu_information(num_threads,data_end,thread_arg);
+      if(preemptive_leave(data_begin,data_end) || chrono::high_resolution_clock::now()<hard_endtime ){
+        break;
       }
     }
 }
+
+
+void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
+  vector<raw_data> data_begin(num_threads);
+  vector<profiled_data> result_arr(num_threads);
+  bool is_heavy_profile = false;
+  while(true){
+    //If the last interval was heavy, move the threads to low priority. If interval is less then 2, obviously special workload. 
+    if ((!heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
+      for (int i = 0; i < num_threads; i++) {
+        moveThreadtoLowPrio(thread_arg[i]->tid);
+      }
+    }
+    if((profiler_iter) % heavy_profile_interval == 0){
+        waitforWorkers();
+        awake_workers_flag=true;
+    }
+    
+    updateVectorFromBanlist("/home/ubuntu/banlist/vtop.txt");
+    //sleep during sleep
+    this_thread::sleep_for(chrono::milliseconds(sleep_length));
+    
+    //set hard-limit for profiling time
+    hard_endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(profile_time);
+
+    get_cpu_information(num_threads,data_begin,thread_arg);
+    
+    do_small_profile(data_begin, data_end, thread_arg);
+    
+    getFinalizedData(num_threads,profile_time,data_begin,data_end,result_arr,thread_arg);
+
+    give_to_kernel(num_threads,result_arr);
+       //If the next interval is heavy, move the threads to high priority.
+    if ((profiler_iter+1) % heavy_profile_interval == 0){
+      for (int i = 0; i < num_threads; i++) {
+        moveThreadtoHighPrio(thread_arg[i]->tid);
+      }
+    }
+    banVcpus(result_arr);
+	  disableStragglerCpus(result_arr);
+    profiler_iter++;
+    if(verbose){
+      printResult(num_threads,result_arr,thread_arg);
+    }
+  }
+}
+
 
 
 vector<thread_args*> setup_threads(vector<pthread_t>& thread_array,vector<raw_data>& data_end){
