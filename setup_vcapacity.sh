@@ -1,5 +1,5 @@
-sudo echo "+cpu+cpuset" | sudo tee /sys/fs/cgroup/cgroup.subtree_control;
-#sudo echo "+cpu" | sudo tee /sys/fs/cgroup/cgroup.subtree_control;
+sudo echo "+cpu" | sudo tee /sys/fs/cgroup/cgroup.subtree_control;
+sudo echo "+cpuset" | sudo tee /sys/fs/cgroup/cgroup.subtree_control;
 
 
 if [ ! -d /sys/fs/cgroup/hi_prgroup ]; then

@@ -26,7 +26,7 @@ int sleep_length = 1000;
 int profile_time = 100;
 int decay_length = 2;
 int heavy_profile_interval = 5;
-int base_heavy_profiling = 0;
+int base_heavy_profiling = 5;
 int context_window = 5;
 bool verbose = false;
 double milliseconds_totick_factor = static_cast<double>(sysconf(_SC_CLK_TCK))/1000.0;
@@ -44,6 +44,9 @@ pthread_cond_t heav_prof_cond = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t heav_prof_mut = PTHREAD_MUTEX_INITIALIZER;
 int heav_ready = 0;
 
+int average_capacity = 500;
+
+float straggler_cutoff = 0.15;
 void* run_computation(void * arg);
 vector<int> vtop_banlist;
 int banned_amount = 0;
@@ -195,6 +198,10 @@ void moveCurrentThread() {
 
 void get_cpu_information(int cpunum,vector<raw_data>& data_arr,vector<thread_args*> thread_arg){
   ifstream f("/proc/vcap_info");
+  if (!f.is_open()) {
+    cerr << "Check to see if kernel modules have been installed - vsched is necessary. "<< endl;
+    return;
+  }
   string s;
   u64 preempts;
   u64 steals;
@@ -284,12 +291,16 @@ void process_raw_capacity(vector<profiled_data>& data) {
   //raw capacity is meant to capture ARM-big-little architetcture not necessarily frequency fluctuations,
   //so our rounding is quite aggressive
   for (profiled_data& pd : data) {
-    pd.capacity_adj = round(pd.capacity_adj * 2) / 2;
+	if(pd.capacity_adj<0.5){
+   	 pd.capacity_adj  = 0;
+	}else{
+		pd.capacity_adj=1;
+	}
   }
   //if the last 5 raw capacities are stable, we can decrease heavy profiling frequency
-  for (profiled_data& pd : data) {
-    pd.capacity_adj = round(pd.capacity_adj * 2) / 2;
-  }
+  //for (profiled_data& pd : data) {
+  //  pd.capacity_adj = round(pd.capacity_adj * 2) / 2;
+  //}
 }
 
 
@@ -297,13 +308,15 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
   double largest_capacity_adj = 0;
   int decay_heavy = 1;
   int lowest_preempts = 99999;
+  float total_capacity = 0;
+  int total_countable = 0;
   for (int i = 0; i < numthreads; i++) {
     u64 stolen_pass = data_end[i].steal_time - data_begin[i].steal_time;
     u64 preempts = data_end[i].preempts - data_begin[i].preempts;
     double used_time = (data_end[i].use_time - data_begin[i].use_time)*10000000;
     if(!(profile_time)==0){
-	    double capacity_perc_1 =  ((double)(used_time)/(used_time+stolen_pass));
-  	  result_arr[i].capacity_perc = capacity_perc_1;
+	    double capacity_perc_1 = ((double)(used_time)/(used_time+stolen_pass));
+  	    result_arr[i].capacity_perc = capacity_perc_1;
       if(stolen_pass < 10000){
 	      result_arr[i].capacity_perc=1.0;
 	    }
@@ -317,6 +330,11 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
     if(result_arr[i].capacity_perc < 0.001){
       result_arr[i].capacity_perc = 0.001;
     }
+    if(!vtop_banlist[i] && !result_arr[i].capacity_perc_ema < straggler_cutoff){
+	  total_capacity += result_arr[i].capacity_perc_ema * 1024;
+	  total_countable += 1;
+
+     }
 	  if (profiler_iter % heavy_profile_interval == 0){
         double perf_use = thread_arg[i]->user_time;
         result_arr[i].capacity_adj = (1/perf_use) * data_end[i].raw_compute;
@@ -329,7 +347,6 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
       } else {
         result_arr[i].latency = stolen_pass/preempts; 
       }
-      
       result_arr[i].max_latency = data_end[i].max_latency;
       addToHistory(result_arr[i].capacity_perc_hist,result_arr[i].capacity_perc);
       
@@ -368,7 +385,8 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
         }
 
     }
-    
+    average_capacity = (int)(total_capacity/total_countable);
+	cout<<"avg capacity:"<<average_capacity;
 }
 
 
@@ -401,6 +419,10 @@ void give_to_kernel(int cpunum,vector<profiled_data>& result_arr){
   write_file << capacity_res;
   write_file.close();
 
+  write_file.open("/proc/vav_capacity_write", ios::out);
+
+  write_file << average_capacity;
+  write_file.close();
   string latency_res;
   write_file.open("/proc/vlatency_write", ios::out);
   for (int i = 0; i < cpunum; i++){
@@ -424,12 +446,12 @@ void waitforWorkers(){
 void banVcpus(vector<profiled_data>& data_arr){
 	ifstream file("/sys/fs/cgroup/user.slice/cpuset.cpus");
 	if (!file) {
-        	cerr << "Failed to access file" << endl;
+        	cerr << "Check if setup shell script is ran" << endl;
         	return;
     	}
 	string bans="";
 	for(int i = 0; i<num_threads; i++){
-		if(vtop_banlist[i] != 1 &&  (data_arr[i].capacity_perc_ema > 0.1)){
+		if(vtop_banlist[i] != 1 &&  (data_arr[i].capacity_perc_ema > straggler_cutoff)){
 		 	bans+=to_string(i)+",";
 		}
 	}
@@ -440,7 +462,7 @@ void banVcpus(vector<profiled_data>& data_arr){
     // Write the banned vCPUs to the file
     ofstream outfile("/sys/fs/cgroup/user.slice/cpuset.cpus");
     if (!outfile) {
-        cerr << "Failed to open file for writing" << endl;
+        cerr << "Check if setup shell script is ran" << endl;
         return;
     }
 
@@ -454,7 +476,7 @@ void updateVectorFromBanlist(string fileLocation) {
     ifstream file(fileLocation);
 
     if (!file) {
-        cerr << "Failed to access file" << endl;
+        cerr << "Banlist not found" << endl;
         return;
     }
 
@@ -467,14 +489,13 @@ void updateVectorFromBanlist(string fileLocation) {
         string item;
         while (getline(iss, item, ',')) {
             // Remove leading/trailing whitespace from the item
-            item.erase(0, item.find_first_not_of(" \t"));
+            item.erase(0, item.find_first_not_of("\t"));
             item.erase(item.find_last_not_of(" \t") + 1);
 
             // Convert the item to an integer and update the vector
             try {
                 int index = stoi(item);
                 if (index >= 0 && index < vtop_banlist.size()) {
-                    	cout<<"vtop_banend"<<index<<endl;
 			vtop_banlist[index] = 1;
                 }
             } catch (const invalid_argument& e) {
@@ -491,7 +512,7 @@ void disableStragglerCpus(vector<profiled_data>& result_arr){
     string banlist = "";
 
     for (int z = 0; z < result_arr.size(); z++) {
-        if (result_arr[z].capacity_perc_ema < 0.10) {
+        if (result_arr[z].capacity_perc_ema < straggler_cutoff) {
           banlist += to_string(z) + ",";
         }
     }
@@ -511,90 +532,111 @@ void disableStragglerCpus(vector<profiled_data>& result_arr){
 
 bool preemptive_leave(vector<raw_data>& data_begin,vector<raw_data>& data_end){
   int max_preempts = -2;
-
-  bool base_case_passed = true;
+  bool maxed_capacity = true;
+  int preempts = 0;
+  bool total_maxed_capacity = false;
 
   for (int i = 0; i < num_threads; i++) {
-    int preempts = data_end[i].preempts - data_begin[i].preempts;
+    preempts = data_end[i].preempts - data_begin[i].preempts;
     if(preempts> max_preempts) {
       max_preempts = preempts;
     }
+    maxed_capacity = ((data_end[i].steal_time - data_begin[i].steal_time) < 1000000);
 
-    if(preempts>0 || ((data_end[i].steal_time - data_begin[i].steal_time) < 1000) ) {
+    if(!maxed_capacity){
+	total_maxed_capacity=false;
+    }
+
+    if(preempts<2 && !maxed_capacity && !vtop_banlist[i]) {
       return false;
     }
   }
 
-  return (max_preempts>2);
+  return (max_preempts>5 || total_maxed_capacity);
 }
 
 
 bool do_small_profile(vector<raw_data>& data_begin,vector<raw_data>& data_end, vector<thread_args*> thread_arg){
   while(true){
-      awake_workers_flag=false;
       //wake up threads and broadcast 
-      initialized = 1;
       pthread_cond_broadcast(&prof_cond);
-      endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(20);
-      this_thread::sleep_for(chrono::milliseconds(20));
-
-      //if it's a heavy profile period wait for the workers to wake up
-      if((profiler_iter) % heavy_profile_interval == 0){
-        waitforWorkers();
-        awake_workers_flag=true;
-      }
-      initialized = 0;
+      //endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(20);
+      this_thread::sleep_for(chrono::milliseconds(10));
       get_cpu_information(num_threads,data_end,thread_arg);
-      if(preemptive_leave(data_begin,data_end) || chrono::high_resolution_clock::now()<hard_endtime ){
-        break;
+      if(preemptive_leave(data_begin,data_end) || chrono::high_resolution_clock::now() > endtime){
+        endtime = chrono::high_resolution_clock::now();
+	break;
       }
     }
 }
 
 
 void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
-  vector<raw_data> data_begin(num_threads);
-  vector<profiled_data> result_arr(num_threads);
-  bool is_heavy_profile = false;
-  while(true){
-    //If the last interval was heavy, move the threads to low priority. If interval is less then 2, obviously special workload. 
-    if ((!heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
-      for (int i = 0; i < num_threads; i++) {
-        moveThreadtoLowPrio(thread_arg[i]->tid);
+    std::vector<raw_data> data_begin(num_threads);
+    std::vector<profiled_data> result_arr(num_threads);
+    u64 test = 0;
+    while(true){
+      //If the last interval was heavy, move the threads to low priority. If interval is less then 2, obviously special workload. 
+      if ((!heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
+        for (int i = 0; i < num_threads; i++) {
+          moveThreadtoLowPrio(thread_arg[i]->tid);
+        }
       }
-    }
-    if((profiler_iter) % heavy_profile_interval == 0){
+      updateVectorFromBanlist("/home/ubuntu/banlist/vtop.txt");
+      //sleep during sleep
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_length));
+
+      //We want to set the endtime and get data immediately after the threads have woken up in order to minimize innacuracy, this is to keep threads waiting
+      endtime = chrono::high_resolution_clock::now() + std::chrono::milliseconds(1000000000);
+
+      //this is for the heavy profile period
+      awake_workers_flag=false;
+
+      //wake up threads and broadcast 
+      initialized = 1;
+      pthread_cond_broadcast(&prof_cond);
+
+      //if it's a heavy profile period wait for the workers to wake up
+      if((profiler_iter) % heavy_profile_interval == 0){
         waitforWorkers();
         awake_workers_flag=true;
-    }
-    
-    updateVectorFromBanlist("/home/ubuntu/banlist/vtop.txt");
-    //sleep during sleep
-    this_thread::sleep_for(chrono::milliseconds(sleep_length));
-    
-    //set hard-limit for profiling time
-    hard_endtime = chrono::high_resolution_clock::now() + chrono::milliseconds(profile_time);
+      }
 
-    get_cpu_information(num_threads,data_begin,thread_arg);
-    
-    do_small_profile(data_begin, data_end, thread_arg);
-    
-    getFinalizedData(num_threads,profile_time,data_begin,data_end,result_arr,thread_arg);
+      //set the endtime and get data
+      endtime = chrono::high_resolution_clock::now() + std::chrono::milliseconds(profile_time);
+      get_cpu_information(num_threads,data_begin,thread_arg);
+      //TODO-sleep every x ms and wake up to see if it's now(potentially)try nano sleep? (do some testing)
+      //Wait for processors to finish profiling
 
-    give_to_kernel(num_threads,result_arr);
+      //sleep during profiling
+      //std::this_thread::sleep_for(std::chrono::milliseconds(profile_time));
+	do_small_profile(data_begin,data_end,thread_arg);
+      //wait for everybody to finish reporting data
+      if ((profiler_iter) % heavy_profile_interval == 0){
+        waitforWorkers();
+      }
+      get_cpu_information(num_threads,data_end,thread_arg);
+      initialized = 0;
+      //get actual profiling period
+     double test = (profile_time * 1000000
+        + static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count())
+        - static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(endtime.time_since_epoch()).count()));
+    //  test = (profile_time * 1000000);
+getFinalizedData(num_threads,test,data_begin,data_end,result_arr,thread_arg);
+      give_to_kernel(num_threads,result_arr);
        //If the next interval is heavy, move the threads to high priority.
-    if ((profiler_iter+1) % heavy_profile_interval == 0){
-      for (int i = 0; i < num_threads; i++) {
-        moveThreadtoHighPrio(thread_arg[i]->tid);
+      if ((profiler_iter+1) % heavy_profile_interval == 0){
+        for (int i = 0; i < num_threads; i++) {
+          moveThreadtoHighPrio(thread_arg[i]->tid);
+        }
+      }
+      banVcpus(result_arr);
+      disableStragglerCpus(result_arr);
+      profiler_iter++;
+      if(verbose){
+        printResult(num_threads,result_arr,thread_arg);
       }
     }
-    banVcpus(result_arr);
-	  disableStragglerCpus(result_arr);
-    profiler_iter++;
-    if(verbose){
-      printResult(num_threads,result_arr,thread_arg);
-    }
-  }
 }
 
 
@@ -646,15 +688,13 @@ int main(int argc, char *argv[]) {
   //Setting up arguments
   const vector<string_view> args(argv, argv + argc);
   setArguments(args);
-
+	
   vector<pthread_t> thread_array(num_threads);
   //note that this needs to be here because the computations and the main thread need to communicate with each other
   vector<raw_data> data_end(num_threads);
 
   vector<thread_args*> threads_arg = setup_threads(thread_array,data_end);
    moveThreadtoHighPrio(syscall(SYS_gettid));
-
-
 
   do_profile(data_end,threads_arg);
 
