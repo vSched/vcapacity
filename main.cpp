@@ -382,11 +382,11 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
           heavy_profile_interval = round(heavy_profile_interval * 1.4);
         } else {
           heavy_profile_interval = base_heavy_profiling;
-        }
+      }
 
     }
     average_capacity = (int)(total_capacity/total_countable);
-	cout<<"avg capacity:"<<average_capacity;
+//	cout<<"avg capacity:"<<average_capacity;
 }
 
 
