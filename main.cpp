@@ -354,7 +354,6 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
       addToHistory(result_arr[i].preempts_hist,result_arr[i].preempts);
       result_arr[i].latency_ema = calculate_ema(decay_length,result_arr[i].latency_ema_a,result_arr[i].latency_ema,result_arr[i].latency);
       result_arr[i].capacity_perc_ema = calculate_ema(decay_length,result_arr[i].capacity_perc_ema_a,result_arr[i].capacity_perc_ema,result_arr[i].capacity_perc);
-      result_arr[i].latency_ema = calculateStdDev(result_arr[i].latency_hist);
       result_arr[i].capacity_perc_stddev = calculateStdDev(result_arr[i].capacity_perc_hist);
       if(preempts < lowest_preempts){
         lowest_preempts = preempts;
@@ -396,7 +395,7 @@ void printResult(int cpunum,vector<profiled_data>& result,vector<thread_args*> t
         cout <<"CPU:"<<i<<" TID:"<<thread_arg[i]->tid<<endl;
         cout<<"Capacity Perc:"<<result[i].capacity_perc<<":Latency:"<<result[i].latency<<":Preempts:"<<result[i].preempts<<":Capacity Raw:"<<result[i].capacity_adj<<endl;
         cout<<":Cperc stddev:"<<result[i].capacity_perc_stddev<<":Max latency:"<<result[i].max_latency;
-        cout <<":Cperc ema: "<<result[i].capacity_perc_ema <<endl<<endl;
+        cout <<":Cperc ema: "<<result[i].capacity_perc_ema<<":Latency EMA:"<<result[i].latency_ema<<endl<<endl;
   }
   auto now = chrono::system_clock::now();
     auto ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
@@ -426,7 +425,7 @@ void give_to_kernel(int cpunum,vector<profiled_data>& result_arr){
   string latency_res;
   write_file.open("/proc/vlatency_write", ios::out);
   for (int i = 0; i < cpunum; i++){
-	  latency_res = latency_res + __cxx11::to_string((int)round(result_arr[i].latency)) + ";";
+	  latency_res = latency_res + __cxx11::to_string((int)round(result_arr[i].latency_ema)) + ";";
   }
   write_file <<latency_res;
   write_file.close();
@@ -468,6 +467,16 @@ void banVcpus(vector<profiled_data>& data_arr){
 
     outfile << bans;
     outfile.close();
+    ofstream outfile1("/sys/fs/cgroup/system.slice/cpuset.cpus");
+    if (!outfile1) {
+        cerr << "Check if setup shell script is ran" << endl;
+        return;
+    }
+
+    outfile1 << bans;
+    outfile1.close();
+
+
     file.close();
 }
 

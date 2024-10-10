@@ -16,3 +16,4 @@ sudo echo "threaded" > /sys/fs/cgroup/lw_prgroup/cgroup.type;
 sudo echo "threaded" > /sys/fs/cgroup/hi_prgroup/cgroup.type;
 sudo echo 1 | sudo tee /sys/fs/cgroup/lw_prgroup/cpu.idle
 sudo echo -20 | sudo tee /sys/fs/cgroup/hi_prgroup/cpu.weight.nice
+sudo insmod /home/ubuntu/vSched-Kernel/custom_modules/preempt_proc.ko
