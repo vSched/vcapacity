@@ -16,7 +16,9 @@
 #include <cmath>
 #include <deque>
 #include <numeric>
+#include <filesystem>
 
+namespace fs = std::filesystem;
 using namespace std;
 typedef uint64_t u64;
 
@@ -50,6 +52,11 @@ float straggler_cutoff = 0.15;
 void* run_computation(void * arg);
 vector<int> vtop_banlist;
 int banned_amount = 0;
+
+fs::path sourcePath = fs::path(__FILE__).parent_path();
+fs::path banlistPath = sourcePath.parent_path() / "banlist";
+
+
 
 //Arguments for each thread
 struct thread_args {
@@ -530,12 +537,12 @@ void disable_straggler_cpus(vector<profiled_data>& result_arr){
       banlist.pop_back();  // Remove the trailing comma
     }
 
-    ofstream banlistFile("/home/ubuntu/banlist/vcap_strag.txt");
+    ofstream banlistFile(banlistPath / "vcap_strag.txt");
     if (banlistFile.is_open()) {
       banlistFile << banlist;
       banlistFile.close();
     } else {
-      cout << "Unable to open file /home/ubuntu/banlist/vcap_strag.txt" << endl;
+      cout << "Unable to open banlist file" << endl;
     }
 }
 
@@ -591,7 +598,7 @@ void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
           move_thread_to_low_prio(thread_arg[i]->tid);
         }
       }
-      updateVectorFromBanlist("/home/ubuntu/banlist/vtop.txt");
+      updateVectorFromBanlist(banlistPath / "vtop.txt");
       //sleep during sleep
       std::this_thread::sleep_for(std::chrono::milliseconds(sleep_length));
 
