@@ -97,7 +97,7 @@ struct profiled_data{
 };
 
 //Math utilities
-double calculateStdDev(const deque<double>& v) {
+double calculate_std_dev(const deque<double>& v) {
   if (v.size() == 0) {
     return 0.0;
   }
@@ -105,8 +105,8 @@ double calculateStdDev(const deque<double>& v) {
   double mean = sum / v.size();
 
   double sq_sum = inner_product(v.begin(), v.end(), v.begin(), 0.0);
-  double stdDev = sqrt(sq_sum / v.size() - mean * mean);
-  return stdDev;
+  double std_dev = sqrt(sq_sum / v.size() - mean * mean);
+  return std_dev;
 }
 
 double calculate_ema(int decay_len, double& ema_help, double prev_ema,double new_value) {
@@ -153,7 +153,7 @@ int stick_this_thread_to_core(int core_id) {
 }
 
 
-void moveThreadtoLowPrio(pid_t tid) {
+void move_thread_to_low_prio(pid_t tid) {
   string path = "/sys/fs/cgroup/lw_prgroup/cgroup.threads";
   ofstream ofs(path, ios_base::app);
   if (!ofs) {
@@ -167,7 +167,7 @@ void moveThreadtoLowPrio(pid_t tid) {
   sched_setscheduler(tid,SCHED_IDLE,&params);
 }
 
-void moveThreadtoHighPrio(pid_t tid) {
+void move_thread_to_high_prio(pid_t tid) {
   string path = "/sys/fs/cgroup/hi_prgroup/cgroup.threads";
   ofstream ofs(path, ios_base::app);
   if (!ofs) {
@@ -179,7 +179,7 @@ void moveThreadtoHighPrio(pid_t tid) {
 }
 
 //Used as pre-step to moving high/low prio
-void moveCurrentThread() {
+void move_current_thread() {
   pid_t tid;
   tid = syscall(SYS_gettid);
   string path = "/sys/fs/cgroup/cgroup.procs";
@@ -246,7 +246,7 @@ void get_cpu_information(int cpunum,vector<raw_data>& data_arr,vector<thread_arg
 
 
 //helper function to set context window to be short
-void addToHistory(deque<double>& history_list,double item){
+void add_to_history(deque<double>& history_list,double item){
   if(history_list.size() > context_window) {
     history_list.pop_front();
   }
@@ -254,7 +254,7 @@ void addToHistory(deque<double>& history_list,double item){
 }
 
 
-void setArguments(const vector<string_view>& arguments) {
+void set_arguments(const vector<string_view>& arguments) {
   verbose = has_option(arguments, "-v");
 
   auto set_option_value = [&](const string_view& option, int& target) {
@@ -304,7 +304,7 @@ void process_raw_capacity(vector<profiled_data>& data) {
 }
 
 
-void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_begin,vector<raw_data>& data_end,vector<profiled_data>& result_arr,vector<thread_args*> thread_arg){
+void get_finalized_data(int numthreads,double profile_time,vector<raw_data>& data_begin,vector<raw_data>& data_end,vector<profiled_data>& result_arr,vector<thread_args*> thread_arg){
   double largest_capacity_adj = 0;
   int decay_heavy = 1;
   int lowest_preempts = 99999;
@@ -348,13 +348,13 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
         result_arr[i].latency = stolen_pass/preempts; 
       }
       result_arr[i].max_latency = data_end[i].max_latency;
-      addToHistory(result_arr[i].capacity_perc_hist,result_arr[i].capacity_perc);
+      add_to_history(result_arr[i].capacity_perc_hist,result_arr[i].capacity_perc);
       
-      addToHistory(result_arr[i].latency_hist,result_arr[i].latency);
-      addToHistory(result_arr[i].preempts_hist,result_arr[i].preempts);
+      add_to_history(result_arr[i].latency_hist,result_arr[i].latency);
+      add_to_history(result_arr[i].preempts_hist,result_arr[i].preempts);
       result_arr[i].latency_ema = calculate_ema(decay_length,result_arr[i].latency_ema_a,result_arr[i].latency_ema,result_arr[i].latency);
       result_arr[i].capacity_perc_ema = calculate_ema(decay_length,result_arr[i].capacity_perc_ema_a,result_arr[i].capacity_perc_ema,result_arr[i].capacity_perc);
-      result_arr[i].capacity_perc_stddev = calculateStdDev(result_arr[i].capacity_perc_hist);
+      result_arr[i].capacity_perc_stddev = calculate_std_dev(result_arr[i].capacity_perc_hist);
       if(preempts < lowest_preempts){
         lowest_preempts = preempts;
       }
@@ -371,8 +371,8 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
     if (profiler_iter % heavy_profile_interval == 0){
         process_raw_capacity(result_arr);
         for (int i = 0; i < numthreads; i++) {
-          addToHistory(result_arr[i].capacity_adj_hist,result_arr[i].capacity_adj);
-          result_arr[i].capacity_adj_stddev = calculateStdDev(result_arr[i].capacity_adj_hist);
+          add_to_history(result_arr[i].capacity_adj_hist,result_arr[i].capacity_adj);
+          result_arr[i].capacity_adj_stddev = calculate_std_dev(result_arr[i].capacity_adj_hist);
             if(result_arr[i].capacity_perc_stddev > 0.1){
               decay_heavy = 0;
             }
@@ -390,7 +390,7 @@ void getFinalizedData(int numthreads,double profile_time,vector<raw_data>& data_
 
 
 
-void printResult(int cpunum,vector<profiled_data>& result,vector<thread_args*> thread_arg){
+void print_result(int cpunum,vector<profiled_data>& result,vector<thread_args*> thread_arg){
   for (int i = 0; i < cpunum; i++){
         cout <<"CPU:"<<i<<" TID:"<<thread_arg[i]->tid<<endl;
         cout<<"Capacity Perc:"<<result[i].capacity_perc<<":Latency:"<<result[i].latency<<":Preempts:"<<result[i].preempts<<":Capacity Raw:"<<result[i].capacity_adj<<endl;
@@ -432,7 +432,7 @@ void give_to_kernel(int cpunum,vector<profiled_data>& result_arr){
 }
 
 
-void waitforWorkers(){
+void wait_for_workers(){
   pthread_mutex_lock(&heav_prof_mut);
   while(heav_ready != (num_threads-banned_amount)){
     pthread_cond_wait(&heav_prof_cond, &heav_prof_mut);
@@ -442,7 +442,7 @@ void waitforWorkers(){
 }
 
 
-void banVcpus(vector<profiled_data>& data_arr){
+void ban_vcpus(vector<profiled_data>& data_arr){
 	ifstream file("/sys/fs/cgroup/user.slice/cpuset.cpus");
 	if (!file) {
         	cerr << "Check if setup shell script is ran" << endl;
@@ -517,7 +517,7 @@ void updateVectorFromBanlist(string fileLocation) {
 }
 
 
-void disableStragglerCpus(vector<profiled_data>& result_arr){
+void disable_straggler_cpus(vector<profiled_data>& result_arr){
     string banlist = "";
 
     for (int z = 0; z < result_arr.size(); z++) {
@@ -588,7 +588,7 @@ void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
       //If the last interval was heavy, move the threads to low priority. If interval is less then 2, obviously special workload. 
       if ((!heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
         for (int i = 0; i < num_threads; i++) {
-          moveThreadtoLowPrio(thread_arg[i]->tid);
+          move_thread_to_low_prio(thread_arg[i]->tid);
         }
       }
       updateVectorFromBanlist("/home/ubuntu/banlist/vtop.txt");
@@ -607,7 +607,7 @@ void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
 
       //if it's a heavy profile period wait for the workers to wake up
       if((profiler_iter) % heavy_profile_interval == 0){
-        waitforWorkers();
+        wait_for_workers();
         awake_workers_flag=true;
       }
 
@@ -622,7 +622,7 @@ void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
 	do_small_profile(data_begin,data_end,thread_arg);
       //wait for everybody to finish reporting data
       if ((profiler_iter) % heavy_profile_interval == 0){
-        waitforWorkers();
+        wait_for_workers();
       }
       get_cpu_information(num_threads,data_end,thread_arg);
       initialized = 0;
@@ -631,19 +631,19 @@ void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
         + static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count())
         - static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(endtime.time_since_epoch()).count()));
     //  test = (profile_time * 1000000);
-getFinalizedData(num_threads,test,data_begin,data_end,result_arr,thread_arg);
+get_finalized_data(num_threads,test,data_begin,data_end,result_arr,thread_arg);
       give_to_kernel(num_threads,result_arr);
        //If the next interval is heavy, move the threads to high priority.
       if ((profiler_iter+1) % heavy_profile_interval == 0){
         for (int i = 0; i < num_threads; i++) {
-          moveThreadtoHighPrio(thread_arg[i]->tid);
+          move_thread_to_high_prio(thread_arg[i]->tid);
         }
       }
-      banVcpus(result_arr);
-      disableStragglerCpus(result_arr);
+      ban_vcpus(result_arr);
+      disable_straggler_cpus(result_arr);
       profiler_iter++;
       if(verbose){
-        printResult(num_threads,result_arr,thread_arg);
+        print_result(num_threads,result_arr,thread_arg);
       }
     }
 }
@@ -693,17 +693,17 @@ int main(int argc, char *argv[]) {
   int num_cpus = sysconf(_SC_NPROCESSORS_ONLN); // Get the number of online processors
   vtop_banlist.resize(num_cpus, 0); 
   //the threads need to be moved to root level cgroup before they can be distributed to high/low cgroup
-  moveCurrentThread();
+  move_current_thread();
   //Setting up arguments
   const vector<string_view> args(argv, argv + argc);
-  setArguments(args);
+  set_arguments(args);
 	
   vector<pthread_t> thread_array(num_threads);
   //note that this needs to be here because the computations and the main thread need to communicate with each other
   vector<raw_data> data_end(num_threads);
 
   vector<thread_args*> threads_arg = setup_threads(thread_array,data_end);
-   moveThreadtoHighPrio(syscall(SYS_gettid));
+   move_thread_to_high_prio(syscall(SYS_gettid));
 
   do_profile(data_end,threads_arg);
 
@@ -740,7 +740,7 @@ u64 timespec_diff_to_ns(struct timespec *start, struct timespec *end) {
 
 
 
-void alertMainThread(){
+void alert_main_thread(){
   pthread_mutex_lock(&heav_prof_mut);
   heav_ready += 1;
   pthread_mutex_unlock(&heav_prof_mut);
@@ -755,7 +755,7 @@ void* run_computation(void * arg)
 {
     //TODO-Learn how to use kernel shark to visualize whole process
     struct thread_args *args = (struct thread_args *)arg;
-    moveThreadtoLowPrio(syscall(SYS_gettid));
+    move_thread_to_low_prio(syscall(SYS_gettid));
     args->tid = syscall(SYS_gettid);
     while(true) {
       stick_this_thread_to_core(args->id);
@@ -769,7 +769,7 @@ void* run_computation(void * arg)
       pthread_mutex_unlock(&args->mutex);
       int addition_calculator = 0;
       if (profiler_iter % heavy_profile_interval == 0){
-        alertMainThread();
+        alert_main_thread();
         while(!awake_workers_flag){
         }
         clock_gettime(CLOCK_MONOTONIC_RAW, &lstart);
@@ -791,7 +791,7 @@ void* run_computation(void * arg)
         double test = static_cast<double>(timespec_diff_to_ns(&start, &end)) /static_cast<double>(timespec_diff_to_ns(&lstart, &lend));
 
         args->user_time = test;
-        alertMainThread();
+        alert_main_thread();
 
         }
       initialized = 0;
