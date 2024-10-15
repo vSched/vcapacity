@@ -17,7 +17,7 @@
 #include <deque>
 #include <numeric>
 #include <filesystem>
-
+#include <algorithm> 
 namespace fs = std::filesystem;
 using namespace std;
 typedef uint64_t u64;
@@ -48,13 +48,12 @@ int heav_ready = 0;
 
 int average_capacity = 500;
 
-float straggler_cutoff = 0.15;
+float straggler_cutoff = 0.20;
 void* run_computation(void * arg);
 vector<int> vtop_banlist;
 int banned_amount = 0;
 
-fs::path sourcePath = fs::path(__FILE__).parent_path();
-fs::path banlistPath = sourcePath.parent_path() / "banlist";
+std::filesystem::path banlistPath = "../banlist";
 
 
 
@@ -210,9 +209,6 @@ void get_cpu_information(int cpunum,vector<raw_data>& data_arr,vector<thread_arg
     return;
   }
   string s;
-  u64 preempts;
-  u64 steals;
-  u64 max_latency;
 
   for (int i = 0; i < cpunum; i++) {
     getline(f,s);
@@ -254,7 +250,7 @@ void get_cpu_information(int cpunum,vector<raw_data>& data_arr,vector<thread_arg
 
 //helper function to set context window to be short
 void add_to_history(deque<double>& history_list,double item){
-  if(history_list.size() > context_window) {
+  if(history_list.size() > (size_t)context_window) {
     history_list.pop_front();
   }
   history_list.push_back(item);
@@ -311,12 +307,45 @@ void process_raw_capacity(vector<profiled_data>& data) {
 }
 
 
+bool checkAndUpdateVtopStatus() {
+    std::ifstream inFile(banlistPath / "vtop_stat.txt");
+    if (!inFile.is_open()) {
+        throw std::runtime_error("Unable to open file for reading: ");
+    }
+
+    std::string content;
+    std::getline(inFile, content);
+    inFile.close();
+
+    // Remove any whitespace from the content
+    content.erase(std::remove_if(content.begin(), content.end(), ::isspace), content.end());
+
+    if (content == "0") {
+        return false;
+    } else if (content == "1") {
+        // Change the content to "0"
+        std::ofstream outFile(banlistPath / "vtop_stat.txt", std::ios::trunc);
+        if (!outFile.is_open()) {
+            throw std::runtime_error("Unable to open file for writing: ");
+        }
+        outFile << "0";
+        outFile.close();
+        return true;
+    } else {
+        throw std::runtime_error("Invalid content in file");
+    }
+}
+
+
 void get_finalized_data(int numthreads,double profile_time,vector<raw_data>& data_begin,vector<raw_data>& data_end,vector<profiled_data>& result_arr,vector<thread_args*> thread_arg){
   double largest_capacity_adj = 0;
   int decay_heavy = 1;
-  int lowest_preempts = 99999;
   float total_capacity = 0;
   int total_countable = 0;
+   int count = 0;
+    double mean = 0.0;
+    double M2 = 0.0;
+
   for (int i = 0; i < numthreads; i++) {
     u64 stolen_pass = data_end[i].steal_time - data_begin[i].steal_time;
     u64 preempts = data_end[i].preempts - data_begin[i].preempts;
@@ -337,7 +366,13 @@ void get_finalized_data(int numthreads,double profile_time,vector<raw_data>& dat
     if(result_arr[i].capacity_perc < 0.001){
       result_arr[i].capacity_perc = 0.001;
     }
-    if(!vtop_banlist[i] && !result_arr[i].capacity_perc_ema < straggler_cutoff){
+       ++count;
+        double delta = result_arr[i].capacity_perc_ema - mean;
+        mean += delta / count;
+        double delta2 = result_arr[i].capacity_perc_ema - mean;
+        M2 += delta * delta2;
+
+    if(!vtop_banlist[i] && (result_arr[i].capacity_perc > straggler_cutoff)){
 	  total_capacity += result_arr[i].capacity_perc_ema * 1024;
 	  total_countable += 1;
 
@@ -356,43 +391,38 @@ void get_finalized_data(int numthreads,double profile_time,vector<raw_data>& dat
       }
       result_arr[i].max_latency = data_end[i].max_latency;
       add_to_history(result_arr[i].capacity_perc_hist,result_arr[i].capacity_perc);
-      
       add_to_history(result_arr[i].latency_hist,result_arr[i].latency);
       add_to_history(result_arr[i].preempts_hist,result_arr[i].preempts);
       result_arr[i].latency_ema = calculate_ema(decay_length,result_arr[i].latency_ema_a,result_arr[i].latency_ema,result_arr[i].latency);
       result_arr[i].capacity_perc_ema = calculate_ema(decay_length,result_arr[i].capacity_perc_ema_a,result_arr[i].capacity_perc_ema,result_arr[i].capacity_perc);
       result_arr[i].capacity_perc_stddev = calculate_std_dev(result_arr[i].capacity_perc_hist);
-      if(preempts < lowest_preempts){
-        lowest_preempts = preempts;
-      }
     };
-    if(lowest_preempts==0){
-      profile_time = profile_time * 1.2;
-    }else if (lowest_preempts>1){
-      profile_time = profile_time * 0.8;
-      if(profile_time>25){
-        profile_time = 25;
-      }
-    }
+    
 
     if (profiler_iter % heavy_profile_interval == 0){
         process_raw_capacity(result_arr);
         for (int i = 0; i < numthreads; i++) {
           add_to_history(result_arr[i].capacity_adj_hist,result_arr[i].capacity_adj);
           result_arr[i].capacity_adj_stddev = calculate_std_dev(result_arr[i].capacity_adj_hist);
-            if(result_arr[i].capacity_perc_stddev > 0.1){
+            if(result_arr[i].capacity_adj_stddev > 0.1){
               decay_heavy = 0;
             }
         }
-        if(decay_heavy){
-          heavy_profile_interval = round(heavy_profile_interval * 1.4);
+	bool getvtopChanged = checkAndUpdateVtopStatus();
+        if(decay_heavy && !getvtopChanged){
+          heavy_profile_interval = round(heavy_profile_interval * 1.6);
         } else {
           heavy_profile_interval = base_heavy_profiling;
       }
 
     }
+    double variance = M2 / (count - 1);
+    if(variance>0.1){
+    //std::cout<<"here's variance"<<variance<<std::endl;
     average_capacity = (int)(total_capacity/total_countable);
-//	cout<<"avg capacity:"<<average_capacity;
+    }else{
+    	average_capacity = 0;
+    }
 }
 
 
@@ -511,7 +541,7 @@ void updateVectorFromBanlist(string fileLocation) {
             // Convert the item to an integer and update the vector
             try {
                 int index = stoi(item);
-                if (index >= 0 && index < vtop_banlist.size()) {
+                if (index >= 0 && (size_t)index < vtop_banlist.size()) {
 			vtop_banlist[index] = 1;
                 }
             } catch (const invalid_argument& e) {
@@ -527,7 +557,7 @@ void updateVectorFromBanlist(string fileLocation) {
 void disable_straggler_cpus(vector<profiled_data>& result_arr){
     string banlist = "";
 
-    for (int z = 0; z < result_arr.size(); z++) {
+    for (int z = 0; z < (int)result_arr.size(); z++) {
         if (result_arr[z].capacity_perc_ema < straggler_cutoff) {
           banlist += to_string(z) + ",";
         }
@@ -563,16 +593,16 @@ bool preemptive_leave(vector<raw_data>& data_begin,vector<raw_data>& data_end){
 	total_maxed_capacity=false;
     }
 
-    if(preempts<2 && !maxed_capacity && !vtop_banlist[i]) {
+    if(preempts<3 && !maxed_capacity && !vtop_banlist[i]) {
       return false;
     }
   }
 
-  return (max_preempts>5 || total_maxed_capacity);
+  return (max_preempts>7 || total_maxed_capacity);
 }
 
 
-bool do_small_profile(vector<raw_data>& data_begin,vector<raw_data>& data_end, vector<thread_args*> thread_arg){
+void do_small_profile(vector<raw_data>& data_begin,vector<raw_data>& data_end, vector<thread_args*> thread_arg){
   while(true){
       //wake up threads and broadcast 
       pthread_cond_broadcast(&prof_cond);
@@ -590,10 +620,9 @@ bool do_small_profile(vector<raw_data>& data_begin,vector<raw_data>& data_end, v
 void do_profile(vector<raw_data>& data_end,vector<thread_args*> thread_arg){
     std::vector<raw_data> data_begin(num_threads);
     std::vector<profiled_data> result_arr(num_threads);
-    u64 test = 0;
     while(true){
       //If the last interval was heavy, move the threads to low priority. If interval is less then 2, obviously special workload. 
-      if ((!heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
+      if ( !(heavy_profile_interval < 2) && ((profiler_iter-1) % heavy_profile_interval == 0)){
         for (int i = 0; i < num_threads; i++) {
           move_thread_to_low_prio(thread_arg[i]->tid);
         }
@@ -679,11 +708,12 @@ vector<thread_args*> setup_threads(vector<pthread_t>& thread_array,vector<raw_da
     threads_arg[i] = args;
   }
   //we need to make sure that all the threads have fetched the thread ID before we go into whatever computation
+  bool allset = true;
   while(true){
-    bool allset = true;
+    allset = true;
     for (int i = 0; i < num_threads; i++) {
       if(threads_arg[i]->tid == -1 ){
-        bool allset = false;
+        allset = false;
       }
     }
     if(allset){
