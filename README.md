@@ -34,6 +34,8 @@ This can be disabled and reenabled with the -o flag
 | ------------- | ------------- | ------------- |
 | -v  | Verbose  | False  |
 | -p  | Profiling time (ms)  | 100  |
+| -d  | Decay Length (Number of runs before EMA discounts by 50%)  | 2 |
+| -c  | Context Window (how many runs have data stored) | 5 |
 | -s  | Sleep time (ms)  | 1000  |
 | -i  |  Heavy Profile Interval | 5 |
 | -o  |  Enable Optimizations | True |
