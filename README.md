@@ -10,3 +10,30 @@
 ## Overview
 
 vCapacity uses a cooperative and multi-phase sampling approach to measure the dynamic capacity of vCPUs in a virtual machine. It provides accurate capacity information without requiring hypervisor modifications, enabling better scheduling decisions in vSched.
+
+
+
+
+## Parameters
+
+It is reccomended that you use vCap's default options.
+
+### Parameter Auto-Configuration
+
+vCapacity can automatically increase and decrease profiling time based on vCPU activity, 
+enabling greater performance. Essentially, each vCPU needs to be some minimum level of active, and
+there needs to be at least one maximally active vCPU, and if these conditions are met, an accurate
+view of capacity is likely met
+
+
+
+| Flag  | Description | Default Value
+| ------------- | ------------- | ------------- |
+| -v  | Verbose  | False  |
+| -p  | Profiling time (ms)  | 100  |
+| -s  | Sleep time (ms)  | 1000  |
+| -i  |  Heavy Profile Interval | 5 |
+| -o  |  Enable Optimizations | True |
+
+
+
