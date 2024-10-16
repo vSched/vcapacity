@@ -14,18 +14,21 @@ vCapacity uses a cooperative and multi-phase sampling approach to measure the dy
 
 
 
-## Parameters
+## Parameters and Configuration
 
 It is reccomended that you use vCap's default options.
 
-### Parameter Auto-Configuration
+### Auto-Configuration
 
 vCapacity can automatically increase and decrease profiling time based on vCPU activity, 
 enabling greater performance. Essentially, each vCPU needs to be some minimum level of active, and
 there needs to be at least one maximally active vCPU, and if these conditions are met, an accurate
-view of capacity is likely met
+view of capacity is likely met.
+
+This can be disabled and reenabled with the -o flag
 
 
+#### Details
 
 | Flag  | Description | Default Value
 | ------------- | ------------- | ------------- |
